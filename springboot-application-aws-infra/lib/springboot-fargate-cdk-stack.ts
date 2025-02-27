@@ -19,11 +19,13 @@ export class SpringbootFargateCdkStack extends cdk.Stack {
 
     const ENV = process.env.ENV || 'hta-example';
 
+    // Create a VPC
     const vpc = new ec2.Vpc(this, `${ENV}-springboot-application-vpc`, {
       maxAzs: 2,
       natGateways: 1
     })
 
+    // Create a ECS Cluster
     const exampleApplicationCluster = new ecs.Cluster(this, "application-cluster", {
       vpc,
       clusterName: `${ENV}-springboot-application-cluster`
@@ -39,7 +41,6 @@ export class SpringbootFargateCdkStack extends cdk.Stack {
     });
 
     // Define an ECS task definition with a single container
-    //
     const taskDefinition = new ecs.FargateTaskDefinition(this, `${ENV}-springboot-TaskDef`, {
       memoryLimitMiB: 512,
       cpu: 256,
@@ -124,7 +125,7 @@ export class SpringbootFargateCdkStack extends cdk.Stack {
     })
 
     /*-------------------*/
-
+    // Create a load-balanced Fargate service and make it public
     const exampleApp = new ecs_patterns.ApplicationLoadBalancedFargateService(this,'hta-example-springboot-load-balanced-application', {
       cluster: exampleApplicationCluster,
       desiredCount: 2,
@@ -134,6 +135,7 @@ export class SpringbootFargateCdkStack extends cdk.Stack {
       taskDefinition: taskDefinition
     })
 
+    // Allow the task definition to write to the bucket
     exampleApp.taskDefinition.addToTaskRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
@@ -145,10 +147,12 @@ export class SpringbootFargateCdkStack extends cdk.Stack {
       ]
     }))
 
+    // Allow the task definition to write to CloudWatch Logs
     taskDefinition.taskRole.addManagedPolicy(
       iam.ManagedPolicy.fromAwsManagedPolicyName('CloudWatchLogsFullAccess')
     );
 
+    // Allow the task definition to write to CloudWatch
     exampleApp.taskDefinition.addToTaskRolePolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
@@ -159,6 +163,7 @@ export class SpringbootFargateCdkStack extends cdk.Stack {
       })
     );
 
+    // Configure health check to the target group
     exampleApp.targetGroup.configureHealthCheck({
       port: 'traffic-port',
       path: '/actuator/health',
@@ -169,11 +174,13 @@ export class SpringbootFargateCdkStack extends cdk.Stack {
       healthyHttpCodes: "200,301,302"
     })
 
+    // Auto Scaling
     const springbootAutoScaling = exampleApp.service.autoScaleTaskCount({
       maxCapacity: 4,
       minCapacity: 2
     })
 
+    // Auto Scaling on CPU Utilization
     springbootAutoScaling.scaleOnCpuUtilization('cpu-autoscaling', {
       targetUtilizationPercent: 70,
       policyName: `${ENV}-springboot-cpu-autoscaling`,
