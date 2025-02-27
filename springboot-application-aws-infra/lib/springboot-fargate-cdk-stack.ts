@@ -1,33 +1,153 @@
-import * as cdk from '@aws-cdk/core';
-import ec2 = require('@aws-cdk/aws-ec2');
-import ecs = require('@aws-cdk/aws-ecs');
-import ecs_patterns = require('@aws-cdk/aws-ecs-patterns');
+import * as cdk from 'aws-cdk-lib';
+import * as ec2 from "aws-cdk-lib/aws-ec2";
+import * as ecs from "aws-cdk-lib/aws-ecs";
+import * as s3 from "aws-cdk-lib/aws-s3";
+import * as ecs_patterns from "aws-cdk-lib/aws-ecs-patterns";
+import * as logs from "aws-cdk-lib/aws-logs";
+import * as iam from "aws-cdk-lib/aws-iam";
+import { Construct } from 'constructs';
 
-export class SpringbootFargateCdkStack extends cdk.Stack {
-  constructor(scope: cdk.Construct, id: string, props?: cdk.StackProps) {
+export class SpringbootFargateCdkStack  extends cdk.Stack {
+  constructor(scope: Construct, id: string, props: cdk.StackProps) {
     super(scope, id, props);
-    
-    const vpc = new ec2.Vpc(this, "example-springboot-application-vpc", {
+
+    const vpc = new ec2.Vpc(this, "hta-example-springboot-application-vpc", {
       maxAzs: 2,
       natGateways: 1
     })
-    
-    const exampleApplicationCluster = new ecs.Cluster(this, "example-springboot-application-cluster", {
+
+    const exampleApplicationCluster = new ecs.Cluster(this, "application-cluster", {
       vpc,
-      clusterName: "application-cluster"
+      clusterName: "hta-example-application-cluster"
     })
-    
-    const exampleApp = new ecs_patterns.ApplicationLoadBalancedFargateService(this, 'example-springboot-load-balanced-application', {
+
+    /*-----Config Containers-----*/
+    // S3
+    const springBootBucket = new s3.Bucket(this, 'hta-example-springboot-bucket', {
+      bucketName: "hta-example-springboot-bucket",
+      publicReadAccess: false,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // Define an ECS task definition with a single container
+    //
+    const taskDefinition = new ecs.FargateTaskDefinition(this, 'hta-example-springboot-TaskDef', {
+      memoryLimitMiB: 512,
+      cpu: 256,
+    });
+
+    // Add SpringBoot container
+    const containerWeb = taskDefinition.addContainer('hta-example-springboot-web', {
+      image: ecs.ContainerImage.fromAsset('../springboot-application'),
+      logging: ecs.LogDrivers.firelens({
+        tag: "hta-example-springboot-application-web-log-firelens",
+        options: {
+          "region": "ap-northeast-1",
+          "bucket": springBootBucket.bucketName,
+          "retry_limit": "2",
+          "use_put_object": "On",
+          "upload_timeout": "1m",
+          "total_file_size": "10MB",
+          "Name": "s3"
+        }
+      }),
+      containerName: 'hta-example-springboot-web',
+      portMappings: [{ containerPort: 8080 }]
+    });
+
+    // Add CloudWatch Agent container
+    const cwAgentContainer = taskDefinition.addContainer('hta-example-springboot-cwagent', {
+      image: ecs.ContainerImage.fromRegistry("public.ecr.aws/cloudwatch-agent/cloudwatch-agent:latest"),
+      cpu: 128,
+      memoryLimitMiB: 64,
+      portMappings: [
+        { containerPort: 4316, hostPort: 4316, protocol: ecs.Protocol.TCP },
+        { containerPort: 4317, hostPort: 4317, protocol: ecs.Protocol.TCP },
+        { containerPort: 2000, hostPort: 2000, protocol: ecs.Protocol.UDP },
+      ],
+      logging: ecs.LogDrivers.firelens({
+        tag: "hta-example-springboot-application-cw-agent-log-firelens",
+        options: {
+          "region": "ap-northeast-1",
+          "bucket": springBootBucket.bucketName,
+          "retry_limit": "2",
+          "use_put_object": "On",
+          "upload_timeout": "1m",
+          "total_file_size": "10MB",
+          "Name": "s3"
+        }
+      }),
+      environment: {
+        TZ: 'Asia/Tokyo',
+        AWS_PROFILE: 'default',
+        AWS_REGION: 'ap-northeast-1',
+        CWAGENT_ONPREMISE: 'true',
+        ECS_CONTAINER_METADATA_URI_V4: '',
+        CWAGENT_LOG_LEVEL: 'error',
+        OTEL_JAVAAGENT_DEBUG: 'true',
+        OTEL_LOG_LEVEL: 'debug',
+        CW_CONFIG_CONTENT: '{"traces":{"traces_collected":{"application_signals":{}}},"logs":{"metrics_collected":{"application_signals":{}}},"agent":{"metrics_collection_interval":60,"run_as_user":"root"},"metrics":{"namespace":"JavaAppMetrics","metrics_collected":{"disk":{"resources":["*"],"measurement":["free","total","used"],"metrics_collection_interval":60},"mem":{"measurement":["mem_used","mem_cached","mem_total"],"metrics_collection_interval":60}}}}',
+      },
+    });
+
+    // Add Firelens container
+    taskDefinition.addFirelensLogRouter('firelens', {
+      image: ecs.ContainerImage.fromRegistry('public.ecr.aws/aws-observability/aws-for-fluent-bit:stable'),
+      essential: true,
+      containerName: 'hta-example-springboot-firelens',
+      firelensConfig: {
+        type: ecs.FirelensLogRouterType.FLUENTBIT,
+        // Configuration file type
+        // options: {
+        //   configFileType: ecs.FirelensConfigFileType.FILE,
+        //   configFileValue: '/fluent-bit/etc/fluent-bit.conf',
+        //   enableECSLogMetadata: false,
+        // }
+      },
+      memoryReservationMiB: 50,
+      logging: ecs.LogDrivers.awsLogs({
+        streamPrefix: 'firelens',
+        logRetention: logs.RetentionDays.ONE_MONTH,
+      })
+    })
+
+    /*-------------------*/
+
+    const exampleApp = new ecs_patterns.ApplicationLoadBalancedFargateService(this,'hta-example-springboot-load-balanced-application', {
       cluster: exampleApplicationCluster,
       desiredCount: 2,
       cpu: 256,
       memoryLimitMiB: 512,
-      taskImageOptions: {
-        image: ecs.ContainerImage.fromAsset('../springboot-application'),
-        containerPort: 8080,
-      }
+      minHealthyPercent: 50,
+      taskDefinition: taskDefinition
     })
-    
+
+    exampleApp.taskDefinition.addToTaskRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        "s3:PutObject",
+      ],
+      resources: [
+        springBootBucket.bucketArn,
+        `${springBootBucket.bucketArn}/*`
+      ]
+    }))
+
+    taskDefinition.taskRole.addManagedPolicy(
+      iam.ManagedPolicy.fromAwsManagedPolicyName('CloudWatchLogsFullAccess')
+    );
+
+    exampleApp.taskDefinition.addToTaskRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          'cloudwatch:PutMetricData'
+        ],
+        resources: ['*']
+      })
+    );
+
     exampleApp.targetGroup.configureHealthCheck({
       port: 'traffic-port',
       path: '/actuator/health',
@@ -37,14 +157,14 @@ export class SpringbootFargateCdkStack extends cdk.Stack {
       unhealthyThresholdCount: 2,
       healthyHttpCodes: "200,301,302"
     })
-    
+
     const springbootAutoScaling = exampleApp.service.autoScaleTaskCount({
       maxCapacity: 4,
       minCapacity: 2
     })
-    
+
     springbootAutoScaling.scaleOnCpuUtilization('cpu-autoscaling', {
-      targetUtilizationPercent: 45,
+      targetUtilizationPercent: 70,
       policyName: "cpu-autoscaling-policy",
       scaleInCooldown: cdk.Duration.seconds(30),
       scaleOutCooldown: cdk.Duration.seconds(30)
