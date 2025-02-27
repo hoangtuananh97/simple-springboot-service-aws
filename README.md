@@ -1,5 +1,7 @@
 # Simple Springboot Service AWS with FluentBit
 
+`NOTE`: This is simple SpringBoot with FluentBit Log project. So, 2 container `cloudwatch agent` and `fluentbit` will use public image of AWS.
+
 Steps to deploy a simple springboot service to AWS using CDK
 1. An opensource springboot app from https://github.com/TechWithHazem/simple-springboot-service-aws/tree/main/springboot-application
 2. Clone the repository

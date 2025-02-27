@@ -5,26 +5,34 @@ import * as s3 from "aws-cdk-lib/aws-s3";
 import * as ecs_patterns from "aws-cdk-lib/aws-ecs-patterns";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as iam from "aws-cdk-lib/aws-iam";
+import * as ecr from "aws-cdk-lib/aws-ecr";
 import { Construct } from 'constructs';
 
-export class SpringbootFargateCdkStack  extends cdk.Stack {
-  constructor(scope: Construct, id: string, props: cdk.StackProps) {
+interface FargateCdkStackProps extends cdk.StackProps {
+  ecrSpringBootRepository: ecr.Repository;
+  ecrFirelensRepository: ecr.Repository;
+  ecrCwAgentRepository: ecr.Repository;
+}
+export class SpringbootFargateCdkStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props: FargateCdkStackProps) {
     super(scope, id, props);
 
-    const vpc = new ec2.Vpc(this, "hta-example-springboot-application-vpc", {
+    const ENV = process.env.ENV || 'hta-example';
+
+    const vpc = new ec2.Vpc(this, `${ENV}-springboot-application-vpc`, {
       maxAzs: 2,
       natGateways: 1
     })
 
     const exampleApplicationCluster = new ecs.Cluster(this, "application-cluster", {
       vpc,
-      clusterName: "hta-example-application-cluster"
+      clusterName: `${ENV}-springboot-application-cluster`
     })
 
     /*-----Config Containers-----*/
     // S3
     const springBootBucket = new s3.Bucket(this, 'hta-example-springboot-bucket', {
-      bucketName: "hta-example-springboot-bucket",
+      bucketName: `${ENV}-springboot-bucket`,
       publicReadAccess: false,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -32,16 +40,17 @@ export class SpringbootFargateCdkStack  extends cdk.Stack {
 
     // Define an ECS task definition with a single container
     //
-    const taskDefinition = new ecs.FargateTaskDefinition(this, 'hta-example-springboot-TaskDef', {
+    const taskDefinition = new ecs.FargateTaskDefinition(this, `${ENV}-springboot-TaskDef`, {
       memoryLimitMiB: 512,
       cpu: 256,
     });
 
     // Add SpringBoot container
-    const containerWeb = taskDefinition.addContainer('hta-example-springboot-web', {
+    const containerWeb = taskDefinition.addContainer(`${ENV}-springboot-web`, {
+      // TODO: in real-world, you should use `ecs.ContainerImage.fromEcrRepository(props.ecrSpringBootRepository)` instead
       image: ecs.ContainerImage.fromAsset('../springboot-application'),
       logging: ecs.LogDrivers.firelens({
-        tag: "hta-example-springboot-application-web-log-firelens",
+        tag: `${ENV}-springboot-application-log-firelens`,
         options: {
           "region": "ap-northeast-1",
           "bucket": springBootBucket.bucketName,
@@ -52,12 +61,13 @@ export class SpringbootFargateCdkStack  extends cdk.Stack {
           "Name": "s3"
         }
       }),
-      containerName: 'hta-example-springboot-web',
+      containerName: `${ENV}-springboot-web`,
       portMappings: [{ containerPort: 8080 }]
     });
 
     // Add CloudWatch Agent container
-    const cwAgentContainer = taskDefinition.addContainer('hta-example-springboot-cwagent', {
+    const cwAgentContainer = taskDefinition.addContainer(`${ENV}-springboot-cwagent`, {
+      // TODO: in real-world, you should use `ecs.ContainerImage.fromEcrRepository(props.ecrCwAgentRepository)` instead
       image: ecs.ContainerImage.fromRegistry("public.ecr.aws/cloudwatch-agent/cloudwatch-agent:latest"),
       cpu: 128,
       memoryLimitMiB: 64,
@@ -67,7 +77,7 @@ export class SpringbootFargateCdkStack  extends cdk.Stack {
         { containerPort: 2000, hostPort: 2000, protocol: ecs.Protocol.UDP },
       ],
       logging: ecs.LogDrivers.firelens({
-        tag: "hta-example-springboot-application-cw-agent-log-firelens",
+        tag: `${ENV}-springboot-application-cw-agent-log-firelens`,
         options: {
           "region": "ap-northeast-1",
           "bucket": springBootBucket.bucketName,
@@ -93,12 +103,13 @@ export class SpringbootFargateCdkStack  extends cdk.Stack {
 
     // Add Firelens container
     taskDefinition.addFirelensLogRouter('firelens', {
+      // TODO: in real-world, you should use `ecs.ContainerImage.fromEcrRepository(props.ecrFirelensRepository)` instead
       image: ecs.ContainerImage.fromRegistry('public.ecr.aws/aws-observability/aws-for-fluent-bit:stable'),
       essential: true,
-      containerName: 'hta-example-springboot-firelens',
+      containerName: `${ENV}-firelens`,
       firelensConfig: {
         type: ecs.FirelensLogRouterType.FLUENTBIT,
-        // Configuration file type
+        // TODO: Configuration file type
         // options: {
         //   configFileType: ecs.FirelensConfigFileType.FILE,
         //   configFileValue: '/fluent-bit/etc/fluent-bit.conf',
@@ -165,7 +176,7 @@ export class SpringbootFargateCdkStack  extends cdk.Stack {
 
     springbootAutoScaling.scaleOnCpuUtilization('cpu-autoscaling', {
       targetUtilizationPercent: 70,
-      policyName: "cpu-autoscaling-policy",
+      policyName: `${ENV}-springboot-cpu-autoscaling`,
       scaleInCooldown: cdk.Duration.seconds(30),
       scaleOutCooldown: cdk.Duration.seconds(30)
     })
